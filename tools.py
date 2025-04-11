@@ -49,14 +49,7 @@ def blif_to_graph(blif_file):
 
     return sources, targets
 def create_graph_structure_json(from_nodes, to_nodes):
-    """Returns a JSON structure with the two lists"""
-    return json.dumps({
-        "graph_sturcture": {
-            "from": from_nodes,
-            "to": to_nodes
-        }
-    })
-
+    return {"from": from_nodes, "to": to_nodes}
 def compute_gate_degrees(blif_path):
     """Calculate degrees only for gates that have fan_in > 0 (active logic gates)"""
     fan_in = {}
@@ -202,62 +195,96 @@ def extract_cluster_parameters(json_file_path):
 
 def extract_target_repartition(json_file_path):
     with open(json_file_path) as f:
-        data = json.load(f)    
-    optimal_repartition=data.get("solution",{})
-    return json.dumps({
-        "optimal_repartition": 
-            optimal_repartition
-        
-    })
-def create_node_features_JSON(cluster_path,output_dir="graphes_JSON"):
+        data = json.load(f)
     
+    optimal_repartition = data.get("solution", {})
+    return optimal_repartition
+
+import numpy as np
+
+def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
     target_repartition = extract_target_repartition(cluster_path)
-    cluster_parameters=extract_cluster_parameters(cluster_path)
-    graph_path="dataset000/"+cluster_parameters['graph']
+    cluster_parameters = extract_cluster_parameters(cluster_path)
+    graph_path = "dataset000/" + cluster_parameters['graph']
     print(graph_path)
-    
+
+    from_nodes, to_nodes = blif_to_graph(graph_path)
+    graph_structure = create_graph_structure_json(from_nodes, to_nodes)
 
     node_features_json = {}
-    depths=compute_gate_depths(graph_path)
-    degrees=compute_gate_degrees(graph_path)
-    
-    mean_delay = np.mean([
-            cluster_parameters['time_NOT'],
-            cluster_parameters['time_AND'],
-            cluster_parameters['time_OR'],
-            cluster_parameters['time_XOR']
-        ])
-    for node in degrees:
-       
+    depths = compute_gate_depths(graph_path)
+    degrees = compute_gate_degrees(graph_path)
 
+    mean_delay = np.mean([
+        cluster_parameters['time_NOT'],
+        cluster_parameters['time_AND'],
+        cluster_parameters['time_OR'],
+        cluster_parameters['time_XOR']
+    ])
+
+    for node in degrees:
         node_features_json[node] = {
             "node_id": int(node),
             "fan_in": degrees[node]["fan_in"],
             "fan_out": degrees[node]["fan_out"],
             "depth": depths.get(node, 0),
             "n_cpus": cluster_parameters["n_cpus"],
-            "latency": cluster_parameters["latency"] / 1_000_0000 ,#convert to seconds i guess 
-            "computation_time" : mean_delay * degrees[node]["fan_in"]
+            "latency": cluster_parameters["latency"] / 1_000_0000,
+            "computation_time": mean_delay * degrees[node]["fan_in"]
         }
 
     os.makedirs(output_dir, exist_ok=True)
-    
-    
-    # Get graph name for output file
+
     graph_name = os.path.splitext(os.path.basename(cluster_parameters['graph']))[0]
-    output_path = os.path.join(output_dir, f"{graph_name}_features.json")
-    
-    
+    base_filename = f"{graph_name}_features.json"
+    output_path = os.path.join(output_dir, base_filename)
+
+    # Check for name collision and create a new filename if needed
+    if os.path.exists(output_path):
+        counter = 2
+        while True:
+            new_filename = f"{graph_name}_{counter}_features.json"
+            new_path = os.path.join(output_dir, new_filename)
+            if not os.path.exists(new_path):
+                output_path = new_path
+                break
+            counter += 1
+
+    final_json = {
+        graph_name: {
+            "graph_structure": graph_structure,
+            "node_features": node_features_json,
+            "optimal_repartition": target_repartition
+        }
+    }
+
     with open(output_path, 'w') as f:
-        json.dump(node_features_json, f, indent=4)
-    
+        json.dump(final_json, f, indent=4)
+
     print(f"Node features exported to: {output_path}")
-    return node_features_json
+    return final_json
 
 
-cluster_1="dataset000/sol/optimal_1743678954.0373209.json"
+
+
+def process_all_clusters(cluster_dir, output_dir="graphes_JSON"):
+    cpt=0
+    success=0
+    errors=0
+    for filename in os.listdir(cluster_dir):
+        cpt+=1
+        if filename.endswith(".json"): 
+            cluster_path = os.path.join(cluster_dir, filename)
+            try:
+                print(f"Processing {filename}...")
+                create_node_features_JSON(cluster_path, output_dir)
+                success+=1
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
+                errors+=1
+    print("processed: ",cpt," successful: ",success, "errors: ",errors)
+
+
+clusters="dataset000/sol"
 graph4="dataset000/blif/Graphe(4).txt"
 test_file="test.txt"
-from_nodes , to_nodes=blif_to_graph(graph4)
-graph_json=create_graph_structure_json(from_nodes,to_nodes)
-print(extract_target_repartition(cluster_1))

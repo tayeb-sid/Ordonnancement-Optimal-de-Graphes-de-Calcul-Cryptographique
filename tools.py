@@ -1,12 +1,15 @@
 import json
-import math
 import os
 import numpy as np
-def blif_to_graph(blif_file):
-    sources = []
-    targets = []
-    logic_gates = set()  # Track all gate outputs (as ints)
+import pandas as pd
 
+def blif_to_graph(blif_file):
+    from_nodes = []
+    to_nodes = []
+    logic_gates = set()
+    original_order = []
+
+    # First pass: collect logic gates in order of appearance
     with open(blif_file, 'r') as f:
         for line in f:
             line = line.strip()
@@ -20,9 +23,15 @@ def blif_to_graph(blif_file):
 
                 output_gate = parts[-1]
                 if output_gate.isdigit():
-                    logic_gates.add(int(output_gate))  # Convert to int
+                    gate_id = int(output_gate)
+                    logic_gates.add(gate_id)
+                    if gate_id not in original_order:
+                        original_order.append(gate_id)
 
-    # Second pass: Only keep edges between logic gates
+    # Build mapping from original ID to new sequential ID
+    id_mapping = {old_id: new_id for new_id, old_id in enumerate(original_order)}
+
+    # Second pass: collect actual edges between logic gates
     with open(blif_file, 'r') as f:
         for line in f:
             line = line.strip()
@@ -42,12 +51,18 @@ def blif_to_graph(blif_file):
 
                 output = int(output)
 
-                for input_gate in inputs:
-                    if input_gate.isdigit() and int(input_gate) in logic_gates:
-                        sources.append(int(input_gate))
-                        targets.append(output)
+                if output not in logic_gates:
+                    continue
 
-    return sources, targets
+                for input_gate in inputs:
+                    if input_gate.isdigit():
+                        input_id = int(input_gate)
+                        if input_id in logic_gates:
+                            from_nodes.append(input_id)
+                            to_nodes.append(output)
+
+    return from_nodes, to_nodes, id_mapping
+
 def create_graph_structure_json(from_nodes, to_nodes):
     return {"from": from_nodes, "to": to_nodes}
 def compute_gate_degrees(blif_path):
@@ -188,7 +203,9 @@ def extract_cluster_parameters(json_file_path):
         "time_XOR": float(params.get("time_XOR", 0.0)),
         "time_AND": float(params.get("time_AND", 0.0)),
         "time_OR": float(params.get("time_OR", 0.0)),
-        "latency": int(params.get("latency", 0))
+        "latency": int(params.get("latency", 0)),
+        "comm_speed": int(params.get("comm_speed", 0)),
+        "cpu_speed": int(params.get("cpu_speed", 0))
     }
     
     return cluster_params
@@ -200,15 +217,13 @@ def extract_target_repartition(json_file_path):
     optimal_repartition = data.get("solution", {})
     return optimal_repartition
 
-import numpy as np
-
 def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
     target_repartition = extract_target_repartition(cluster_path)
     cluster_parameters = extract_cluster_parameters(cluster_path)
     graph_path = "dataset000/" + cluster_parameters['graph']
     print(graph_path)
 
-    from_nodes, to_nodes = blif_to_graph(graph_path)
+    from_nodes, to_nodes,id_mapping = blif_to_graph(graph_path)
     graph_structure = create_graph_structure_json(from_nodes, to_nodes)
 
     node_features_json = {}
@@ -229,6 +244,8 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
             "fan_out": degrees[node]["fan_out"],
             "depth": depths.get(node, 0),
             "n_cpus": cluster_parameters["n_cpus"],
+            "cpu_speed": cluster_parameters["cpu_speed"]/100,
+            "comm_speed": cluster_parameters["comm_speed"]/100,
             "latency": cluster_parameters["latency"] / 1_000_0000,
             "computation_time": mean_delay * degrees[node]["fan_in"]
         }
@@ -254,7 +271,8 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
         graph_name: {
             "graph_structure": graph_structure,
             "node_features": node_features_json,
-            "optimal_repartition": target_repartition
+            "optimal_repartition": target_repartition,
+            "id_mapping":id_mapping
         }
     }
 
@@ -263,9 +281,6 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
 
     print(f"Node features exported to: {output_path}")
     return final_json
-
-
-
 
 def process_all_clusters(cluster_dir, output_dir="graphes_JSON"):
     cpt=0
@@ -284,7 +299,122 @@ def process_all_clusters(cluster_dir, output_dir="graphes_JSON"):
                 errors+=1
     print("processed: ",cpt," successful: ",success, "errors: ",errors)
 
+def extract_mapped_edges_from_json(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    graph_name = next(iter(data))
+    graph_data = data[graph_name]
+
+    graph_structure = graph_data["graph_structure"]  # Dict: { "from": [...], "to": [...] }
+    mapping = graph_data["id_mapping"]  # Dict: original_id (str) -> mapped_id (int)
+
+    # Prepare lists for 'from', 'to', 'original_from', and 'original_to'
+    from_nodes = []
+    to_nodes = []
+    original_from = []
+    original_to = []
+
+    for original_src, original_dst in zip(graph_structure["from"], graph_structure["to"]):
+        mapped_src = mapping[str(original_src)]  # Map the original source node to the new ID
+        mapped_dst = mapping[str(original_dst)]  # Map the original destination node to the new ID
+
+        from_nodes.append(mapped_src)
+        to_nodes.append(mapped_dst)
+        original_from.append(original_src)  # Store the original source node
+        original_to.append(original_dst)  # Store the original destination node
+
+    # Create a pandas DataFrame with 'from', 'to', 'original_from', and 'original_to' columns
+    edge_df = pd.DataFrame({
+        'from': from_nodes,
+        'to': to_nodes,
+        'original_from': original_from,
+        'original_to': original_to
+    })
+
+    # Sort the DataFrame by the 'from' column
+    edge_df = edge_df.sort_values(by='from').reset_index(drop=True)
+
+    return edge_df
+
+def extract_node_features_from_json_file(json_file):
+    # Load the JSON data from the file
+    with open(json_file, 'r') as f:
+        graph_data = json.load(f)
+    
+    # Get the first key of the graph_data (this will be the graph name)
+    graph_name = next(iter(graph_data))  # Extract the first key (graph name)
+    
+    # Extract the "node_features" dictionary from the graph_data
+    node_features = graph_data[graph_name]["node_features"]
+    
+    # Extract the "id_mapping" dictionary to use for sorting
+    id_mapping = graph_data[graph_name].get("id_mapping", {})
+    
+    # Prepare a list of node features for the DataFrame
+    node_data = []
+    for node_id, features in node_features.items():
+        # Add the node_id and its associated features to the node_data list
+        features["node_id"] = node_id  # Append node_id as a column
+        node_data.append(features)
+    
+    # Convert the list of node data into a pandas DataFrame
+    df = pd.DataFrame(node_data)
+    
+    # Sort the DataFrame based on the "id_mapping" of node_ids (the new mapped order)
+    if id_mapping:
+        # Ensure that id_mapping is in a list of (old_id, new_id) format
+        # Here, we assume id_mapping is a dictionary where key is the old node_id and value is the new node_id.
+        sorted_node_ids = sorted(id_mapping, key=lambda x: id_mapping[x])
+        
+        # Reorder the rows of the DataFrame based on the sorted mapping
+        df.set_index("node_id", inplace=True)
+        df = df.loc[sorted_node_ids]
+    
+    return df
+
+def extract_optimal_repartition_from_json(json_path):
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+
+    graph_name = next(iter(data))  # Extract graph name (assuming there's only one graph in the file)
+    graph_data = data[graph_name]
+
+    # Extract "optimal_repartition" and "id_mapping" from the JSON
+    optimal_repartition = graph_data["optimal_repartition"]  # List of [original_id, cpu]
+    mapping = graph_data["id_mapping"]  # Dict: original_id (str) -> mapped_id (int)
+
+    # Prepare lists for the original ID, assigned CPU, and mapped ID
+    original_ids = []
+    assigned_cpus = []
+    mapped_ids = []
+
+    # Iterate over the "optimal_repartition" list
+    for item in optimal_repartition:
+        original_id = item[0]  # The original ID is the first element in each sublist
+        cpu = item[1]  # The CPU is the second element in each sublist
+
+        # Get the mapped ID from the id_mapping
+        mapped_id = mapping[str(original_id)]  # Use str to match the keys in id_mapping
+
+        original_ids.append(original_id)
+        assigned_cpus.append(cpu)
+        mapped_ids.append(mapped_id)
+
+    # Create a pandas DataFrame with 'original_id', 'assigned_cpu', and 'mapped_id' columns
+    repartition_df = pd.DataFrame({
+        'original_id': original_ids,
+        'assigned_cpu': assigned_cpus,
+        'mapped_id': mapped_ids
+    })
+
+    # Sort the DataFrame by 'mapped_id' to ensure it's ordered by the mapped node IDs
+    repartition_df = repartition_df.sort_values(by='mapped_id').reset_index(drop=True)
+
+    return repartition_df
+
 
 clusters="dataset000/sol"
 graph4="dataset000/blif/Graphe(4).txt"
 test_file="test.txt"
+testJSON_file="test.json"

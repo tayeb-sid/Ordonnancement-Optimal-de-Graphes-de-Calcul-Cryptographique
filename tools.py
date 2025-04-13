@@ -418,3 +418,38 @@ clusters="dataset000/sol"
 graph4="dataset000/blif/Graphe(4).txt"
 test_file="test.txt"
 testJSON_file="test.json"
+
+
+def rename_json_files(json_dir):
+    # Create a set to keep track of filenames to avoid duplicates
+    seen_files = set()
+
+    # Iterate through all JSON files in the directory
+    for filename in os.listdir(json_dir):
+        if filename.endswith('.json'):
+            file_path = os.path.join(json_dir, filename)
+            
+            # Open and load the JSON file
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            # Extract the "blif" field from the JSON (assuming the structure you provided)
+            blif_field = data.get("parameters", {}).get("blif", "")
+            if blif_field:
+                # Extract the part of the blif file name
+                blif_name = os.path.basename(blif_field)  # E.g., "Graphe(4346).txt"
+                new_filename = f"optimal_{blif_name.replace('.txt', '.json')}"
+                
+                # If the filename already exists, add a suffix (_1, _2, etc.)
+                suffix = 1
+                while new_filename in seen_files:
+                    new_filename = f"optimal_{blif_name.replace('.txt', f'_{suffix}.json')}"
+                    suffix += 1
+                
+                # Rename the file
+                os.rename(file_path, os.path.join(json_dir, new_filename))
+                seen_files.add(new_filename)
+
+# Specify the directory containing your JSON files
+json_dir = "dataset000/sol"
+# rename_json_files(json_dir)

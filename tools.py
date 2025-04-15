@@ -1,4 +1,5 @@
 import json
+import torch
 import os
 import numpy as np
 import pandas as pd
@@ -197,15 +198,15 @@ def extract_cluster_parameters(json_file_path):
     params = data.get("parameters", {})
     
     cluster_params = {
-        "graph": params.get("blif", ""),  # Keeps full path "blif/Graphe(4346).txt"
-        "n_cpus": int(params.get("nodes", 0)),
+        "graph": params.get("blif", ""),  
         "time_NOT": float(params.get("time_NOT", 0.0)),
         "time_XOR": float(params.get("time_XOR", 0.0)),
         "time_AND": float(params.get("time_AND", 0.0)),
         "time_OR": float(params.get("time_OR", 0.0)),
         "latency": int(params.get("latency", 0)),
         "comm_speed": int(params.get("comm_speed", 0)),
-        "cpu_speed": int(params.get("cpu_speed", 0))
+        "cpu_speed": int(params.get("cpu_speed", 0)),
+        "n_cpus": int(params.get("nodes", 0))
     }
     
     return cluster_params
@@ -243,11 +244,11 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
             "fan_in": degrees[node]["fan_in"],
             "fan_out": degrees[node]["fan_out"],
             "depth": depths.get(node, 0),
-            "n_cpus": cluster_parameters["n_cpus"],
             "cpu_speed": cluster_parameters["cpu_speed"]/100,
             "comm_speed": cluster_parameters["comm_speed"]/100,
             "latency": cluster_parameters["latency"] / 1_000_0000,
-            "computation_time": mean_delay * degrees[node]["fan_in"]
+            "computation_time": mean_delay * degrees[node]["fan_in"],
+            "n_cpus": cluster_parameters["n_cpus"]
         }
 
     os.makedirs(output_dir, exist_ok=True)
@@ -453,3 +454,21 @@ def rename_json_files(json_dir):
 # Specify the directory containing your JSON files
 json_dir = "dataset000/sol"
 # rename_json_files(json_dir)
+
+# process_all_clusters(clusters)
+
+def prepare_data_for_GNN(node_features_df, edges_df, target_df):
+    from_nodes = edges_df['from'].values
+    to_nodes = edges_df['to'].values
+
+    node_features = node_features_df.values
+    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
+
+    y_target = target_df['assigned_cpu'].values
+    y_target_tensor = torch.tensor(y_target, dtype=torch.float32)
+
+   
+    edge_index = np.array([from_nodes, to_nodes], dtype=np.int64)
+    edge_index_tensor = torch.tensor(edge_index, dtype=torch.long)
+
+    return node_features_tensor, edge_index_tensor, y_target_tensor

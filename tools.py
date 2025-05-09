@@ -414,13 +414,6 @@ def extract_optimal_repartition_from_json(json_path):
 
     return repartition_df
 
-
-clusters="dataset000/sol"
-graph4="dataset000/blif/Graphe(4).txt"
-test_file="test.txt"
-testJSON_file="test.json"
-
-
 def rename_json_files(json_dir):
     # Create a set to keep track of filenames to avoid duplicates
     seen_files = set()
@@ -434,11 +427,10 @@ def rename_json_files(json_dir):
             with open(file_path, 'r') as f:
                 data = json.load(f)
             
-            # Extract the "blif" field from the JSON (assuming the structure you provided)
             blif_field = data.get("parameters", {}).get("blif", "")
             if blif_field:
                 # Extract the part of the blif file name
-                blif_name = os.path.basename(blif_field)  # E.g., "Graphe(4346).txt"
+                blif_name = os.path.basename(blif_field) 
                 new_filename = f"optimal_{blif_name.replace('.txt', '.json')}"
                 
                 # If the filename already exists, add a suffix (_1, _2, etc.)
@@ -451,24 +443,33 @@ def rename_json_files(json_dir):
                 os.rename(file_path, os.path.join(json_dir, new_filename))
                 seen_files.add(new_filename)
 
-# Specify the directory containing your JSON files
-json_dir = "dataset000/sol"
-# rename_json_files(json_dir)
-
-# process_all_clusters(clusters)
 
 def prepare_data_for_GNN(node_features_df, edges_df, target_df):
     from_nodes = edges_df['from'].values
     to_nodes = edges_df['to'].values
 
+    
     node_features = node_features_df.values
+
     node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
 
     y_target = target_df['assigned_cpu'].values
-    y_target_tensor = torch.tensor(y_target, dtype=torch.float32)
+    y_target_tensor = torch.tensor(y_target, dtype=torch.long)
 
    
     edge_index = np.array([from_nodes, to_nodes], dtype=np.int64)
     edge_index_tensor = torch.tensor(edge_index, dtype=torch.long)
 
     return node_features_tensor, edge_index_tensor, y_target_tensor
+
+
+clusters="dataset000/sol"
+graph4="dataset000/blif/Graphe(4).txt"
+test_file="test.txt"
+testJSON_file="test.json"
+json_dir = "dataset000/sol"
+
+# json_dirComplet = "datasetComplet/dataset001/sol"
+# rename_json_files(json_dir)
+
+# process_all_clusters(clusters,"graphes_JSON_Complet")

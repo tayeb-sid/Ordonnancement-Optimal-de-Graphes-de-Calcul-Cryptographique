@@ -152,14 +152,34 @@ def process_all_graphs(json_dir):
     return [avg_pred, avg_opt]
 
 # ------------------ EXECUTE --------------------
-results=[]
-for i in range (67,78):
-    path="graphes_JSON_Complet/"+str(i)+"/test"
+import pandas as pd
+
+results = []
+rows = []
+
+for i in range(2, 101):
+    path = f"graphes_JSON_Complet/{i}/test"
     result = process_all_graphs(path)
     results.append(result)
+    rows.append({
+        "Machines": i,
+        "Prediction Cost": round(result[0], 2),
+        "Optimal Cost": round(result[1], 2)
+    })
 
-i=2
-for result in results:
-    print(f'--- Clusters with {i} machines ---')
+# Create DataFrame
+df = pd.DataFrame(rows)
+
+# Print each row
+for idx, row in df.iterrows():
+    print(f'--- Clusters with {row["Machines"]} machines ---')
     print(f'AVG Prediction cost | AVG Optimal cost')
-    print(result)
+    print(f'{row["Prediction Cost"]:.2f} | {row["Optimal Cost"]:.2f}')
+
+# Compute and print total averages
+total_avg_pred = df["Prediction Cost"].mean()
+total_avg_optimal = df["Optimal Cost"].mean()
+print(f'\nTotal AVG prediction Cost: {total_avg_pred:.2f} | Total AVG optimal Cost: {total_avg_optimal:.2f}')
+
+# # df.to_csv("evaluation_results.csv", index=False)
+# print(df.head())

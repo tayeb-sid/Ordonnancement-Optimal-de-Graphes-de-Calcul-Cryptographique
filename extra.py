@@ -109,3 +109,37 @@ def not_check(truth_table):
     n_inputs= len(truth_table[1])-1
     return n_inputs==1
 
+import networkx as nx
+import matplotlib.pyplot as plt
+
+def plot_directed_graph(sources, destinations):
+    """
+    Plots a directed graph from source and destination node lists.
+    
+    Parameters:
+        sources (list): List of source node IDs.
+        destinations (list): List of destination node IDs.
+    """
+    if len(sources) != len(destinations):
+        raise ValueError("Sources and destinations must be of equal length.")
+    
+    G = nx.DiGraph()
+    edges = list(zip(sources, destinations))
+    G.add_edges_from(edges)
+    
+    pos = nx.spring_layout(G)
+    nx.draw(G, pos, with_labels=True, node_color='lightblue', edge_color='gray', arrows=True)
+    plt.title("Directed Graph")
+    plt.show()
+
+
+def check_gate(truth_table):
+    if and_check(truth_table):
+        return "AND"
+    if or_check(truth_table):
+        return "OR"
+    if xor_check(truth_table):
+        return "XOR"
+    if not_check(truth_table):
+        return "NOT"
+    return 0

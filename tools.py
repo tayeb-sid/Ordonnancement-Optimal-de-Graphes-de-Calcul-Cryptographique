@@ -3,7 +3,11 @@ import torch
 import os
 import numpy as np
 import pandas as pd
-
+from extra import extract_truth_tables_as_matrices,check_gate
+import os
+import json
+import torch
+import re
 def blif_to_graph(blif_file):
     from_nodes = []
     to_nodes = []
@@ -206,7 +210,8 @@ def extract_cluster_parameters(json_file_path):
         "latency": int(params.get("latency", 0)),
         "comm_speed": int(params.get("comm_speed", 0)),
         "cpu_speed": int(params.get("cpu_speed", 0)),
-        "n_cpus": int(params.get("nodes", 0))
+        "n_cpus": int(params.get("nodes", 0)),
+        "in_length":int(params.get("in_length",0))
     }
     
     return cluster_params
@@ -221,9 +226,10 @@ def extract_target_repartition(json_file_path):
 def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
     target_repartition = extract_target_repartition(cluster_path)
     cluster_parameters = extract_cluster_parameters(cluster_path)
+    fitness_param=load_fitness_parameters(cluster_path)
     graph_path = "dataset000/" + cluster_parameters['graph']
     print(graph_path)
-
+    truth_tables=extract_truth_tables_as_matrices(graph_path)
     from_nodes, to_nodes,id_mapping = blif_to_graph(graph_path)
     graph_structure = create_graph_structure_json(from_nodes, to_nodes)
 
@@ -238,22 +244,56 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
         cluster_parameters['time_XOR']
     ])
 
+    
+    os.makedirs(output_dir, exist_ok=True)
+
+    graph_name = os.path.splitext(os.path.basename(cluster_parameters['graph']))[0]
+    
+    graph_blif_name = os.path.basename(cluster_parameters['graph'])  # e.g., Graphe(1).blif
+    match_graph = re.search(r'Graphe\((\d+)\)', graph_blif_name, re.IGNORECASE)
+    graph_number = int(match_graph.group(1)) if match_graph else -1
+
     for node in degrees:
+        filtered_lines = [line for line in truth_tables if line[0] == node]
+        truth_table=filtered_lines[0][1]
+        node_weight=len(truth_table)
+        type="uknown"
+        if check_gate(truth_table)=='AND':
+            mean_delay=cluster_parameters['time_AND']
+            type="AND"
+        elif check_gate(truth_table)=='OR':
+            type="OR"
+            mean_delay=cluster_parameters['time_OR']
+
+        elif check_gate(truth_table)=='XOR':
+            mean_delay=cluster_parameters['time_XOR']
+            type="XOR"
+
+        elif check_gate(truth_table)=='NOT':
+            mean_delay=cluster_parameters['time_NOT']
+            type="NOT"
+
         node_features_json[node] = {
             "node_id": int(node),
             "fan_in": degrees[node]["fan_in"],
             "fan_out": degrees[node]["fan_out"],
             "depth": depths.get(node, 0),
-            "cpu_speed": cluster_parameters["cpu_speed"]/100,
-            "comm_speed": cluster_parameters["comm_speed"]/100,
-            "latency": cluster_parameters["latency"] / 1_000_0000,
-            "computation_time": mean_delay * degrees[node]["fan_in"],
-            "n_cpus": cluster_parameters["n_cpus"]
+            "weight": node_weight,
+            "computation_time": mean_delay * degrees[node]["fan_in"] * node_weight,
+            "cpu_speed": cluster_parameters["cpu_speed"],
+            "comm_speed": cluster_parameters["comm_speed"],
+            "latency": cluster_parameters["latency"],
+            "in_length":cluster_parameters["in_length"],
+            "time_NOT":        cluster_parameters['time_NOT'],
+            "time_AND":cluster_parameters['time_AND'],
+            "time_OR": cluster_parameters['time_OR'],
+            "time_XOR":cluster_parameters['time_XOR'],
+            "n_cpus": cluster_parameters["n_cpus"],
+            "graphe_number":graph_number
         }
+       
+  
 
-    os.makedirs(output_dir, exist_ok=True)
-
-    graph_name = os.path.splitext(os.path.basename(cluster_parameters['graph']))[0]
     base_filename = f"{graph_name}_features.json"
     output_path = os.path.join(output_dir, base_filename)
 
@@ -273,6 +313,7 @@ def create_node_features_JSON(cluster_path, output_dir="graphes_JSON"):
             "graph_structure": graph_structure,
             "node_features": node_features_json,
             "optimal_repartition": target_repartition,
+            "fitness_params": fitness_param,
             "id_mapping":id_mapping
         }
     }
@@ -463,13 +504,208 @@ def prepare_data_for_GNN(node_features_df, edges_df, target_df):
     return node_features_tensor, edge_index_tensor, y_target_tensor
 
 
+def load_fitness_parameters(json_path):
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    p = data["parameters"]
+
+    # Convert parameters to correct types
+    params = {
+        "blif": p["blif"],
+        "in_length": int(p["in_length"]),
+        "nodes": int(p["nodes"]),
+        "cores": int(p["cores"]),
+        "time_NOT": float(p["time_NOT"]),
+        "time_XOR": float(p["time_XOR"]),
+        "time_AND": float(p["time_AND"]),
+        "time_OR": float(p["time_OR"]),
+        "cpu_speed": float(p["cpu_speed"]),
+        "comm_speed": float(p["comm_speed"]),
+        "latency": float(p["latency"])
+    }
+    return params
+
+import os
+import json
+import torch
+
+def add_prediction_to_json(predictions, file_name, dir_path=""):
+    # Build full path
+    json_path = os.path.join(dir_path, file_name) if dir_path else file_name
+
+    # Extract graph key: first word before '_'
+    graph_key = file_name.split("_")[0]
+
+    # Load JSON
+    with open(json_path, "r") as f:
+        data = json.load(f)
+
+    # Convert predictions to list if it's a tensor
+    pred_list = predictions.tolist() if isinstance(predictions, torch.Tensor) else list(predictions)
+
+    # Inject predictions
+    data[graph_key]["prediction_list"] = pred_list
+
+    # Save file
+    with open(json_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+import os
+import json
+import shutil
+
+def organize_by_n_cpus(source_dir):
+    for file_name in os.listdir(source_dir):
+        if not file_name.endswith(".json"):
+            continue
+
+        file_path = os.path.join(source_dir, file_name)
+
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+
+            # Extract the first graph key
+            graph_key = next(iter(data))
+            node_features = data[graph_key]["node_features"]
+
+            # Extract n_cpus from the first node
+            first_node_key = next(iter(node_features))
+            n_cpus = node_features[first_node_key]["n_cpus"]
+
+            # Make destination directory
+            dest_dir = os.path.join(source_dir, str(n_cpus))
+            os.makedirs(dest_dir, exist_ok=True)
+
+            # Move the file
+            shutil.move(file_path, os.path.join(dest_dir, file_name))
+
+        except Exception as e:
+            print(f"Skipping {file_name}: {e}")
+
+import os
+import random
+import shutil
+
+def split_train_test(root_dir, train_ratio=0.8):
+    for n_cpu_folder in os.listdir(root_dir):
+        folder_path = os.path.join(root_dir, n_cpu_folder)
+        if not os.path.isdir(folder_path):
+            continue
+
+        # List only JSON files
+        files = [f for f in os.listdir(folder_path) if f.endswith(".json")]
+        if not files:
+            continue
+
+        # random.shuffle(files)
+        split_idx = int(len(files) * train_ratio)
+        train_files = files[:split_idx]
+        test_files = files[split_idx:]
+
+        # Create subfolders
+        train_path = os.path.join(folder_path, "train")
+        test_path = os.path.join(folder_path, "test")
+        os.makedirs(train_path, exist_ok=True)
+        os.makedirs(test_path, exist_ok=True)
+
+        # Move files
+        for f in train_files:
+            shutil.move(os.path.join(folder_path, f), os.path.join(train_path, f))
+        for f in test_files:
+            shutil.move(os.path.join(folder_path, f), os.path.join(test_path, f))
+
+
+import os
+from torch_geometric.data import Data
+
+def load_graphs_by_ncpu(n_cpu: int, base_dir="graphes_JSON_Complet"):
+    cpu_dir = os.path.join(base_dir, str(n_cpu))
+    train_dir = os.path.join(cpu_dir, "train")
+    test_dir = os.path.join(cpu_dir, "test")
+
+    def load_graphs_from_dir(directory):
+        if not os.path.exists(directory):
+            print(f"Warning: Directory does not exist: {directory}")
+            return []
+        files = [f for f in os.listdir(directory) if f.endswith('.json')]
+        data_list = []
+        for file in files:
+            path = os.path.join(directory, file)
+            node_features_df = extract_node_features_from_json_file(path)
+            edges_df = extract_mapped_edges_from_json(path)
+            target_df = extract_optimal_repartition_from_json(path)
+            node_features_tensor, edge_index_tensor, y_target_tensor = prepare_data_for_GNN(
+                node_features_df, edges_df, target_df
+            )
+            data = Data(x=node_features_tensor, edge_index=edge_index_tensor, y=y_target_tensor)
+            data_list.append(data)
+        return data_list
+
+    train_graphs = load_graphs_from_dir(train_dir)
+    test_graphs = load_graphs_from_dir(test_dir)
+
+    print(f"Loaded {len(train_graphs)} training and {len(test_graphs)} testing graphs for n_cpus={n_cpu}")
+    return train_graphs, test_graphs
+
+
+
 clusters="dataset000/sol"
-graph4="dataset000/blif/Graphe(4).txt"
-test_file="test.txt"
-testJSON_file="test.json"
-json_dir = "dataset000/sol"
+# graph4="dataset000/blif/Graphe(4).txt"
+# test_file="test.txt"
+# testJSON_file="test.json"
+# json_dir = "dataset000/sol"
 
 # json_dirComplet = "datasetComplet/dataset001/sol"
 # rename_json_files(json_dir)
 
+
+
+# graph4="dataset000/Logique/Graphe(1).txt"
+# truth_tables= extract_truth_tables_as_matrices(graph4)
+# for gate_id, matrix in truth_tables:
+#     print(f"Gate: {gate_id} weight {len(matrix)}")
+#     print(check_gate(matrix))
+    # for row in matrix:
+    #     print(row)
+import os
+import json
+import re
+
+def add_suffix_to_each_node_feature(folder_path):
+    for file_name in os.listdir(folder_path):
+        if not file_name.endswith('_features.json'):
+            continue
+
+        # Try to extract the suffix
+        match = re.search(r'_(\d+)_features\.json$', file_name)
+        suffix = int(match.group(1)) if match else -1
+
+        file_path = os.path.join(folder_path, file_name)
+
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+
+        # Assuming the structure is: { "Graphe(n)": { ... } }
+        graph_key = list(data.keys())[0]
+        node_features = data[graph_key].get("node_features", {})
+
+        for node_id, node_data in node_features.items():
+            if isinstance(node_data, dict):  # safety check
+                node_data["graph_suffix"] = suffix
+
+        # Save back the updated JSON
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    print("Suffixes added to all node features.")
+
+
+# create_node_features_JSON("dataset000\sol\optimal_Graphe(1)_1.json","qsd")
+# add_suffix_to_each_node_feature('qsd')
+
 # process_all_clusters(clusters,"graphes_JSON_Complet")
+# add_suffix_to_each_node_feature('graphes_JSON_Complet')
+# organize_by_n_cpus('graphes_JSON_Complet')
+# split_train_test('graphes_JSON_Complet')
